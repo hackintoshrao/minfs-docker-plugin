@@ -1,7 +1,22 @@
+/*
+* Minio Cloud Storage, (C) 2017 Minio, Inc.
+*
+* Licensed under the Apache License, Version 2.0 (the "License");
+* you may not use this file except in compliance with the License.
+* You may obtain a copy of the License at
+*
+*     http://www.apache.org/licenses/LICENSE-2.0
+*
+* Unless required by applicable law or agreed to in writing, software
+* distributed under the License is distributed on an "AS IS" BASIS,
+* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+* See the License for the specific language governing permissions and
+* limitations under the License.
+ */
+
 package main
 
 import (
-	"crypto/md5"
 	"flag"
 	"fmt"
 	"net/url"
@@ -9,10 +24,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/Sirupsen/logrus"
 	"github.com/docker/go-plugins-helpers/volume"
+	"github.com/minio/minio-go"
 )
 
 // Used for Plugin discovery.
@@ -32,7 +49,7 @@ const (
 // $ docker volume create -d minfs-plugin \
 //    --name medical-imaging-store \
 //     -o endpoint=https://play.minio.io:9000/rao -o access_key=Q3AM3UQ867SPQQA43P2F\
-//     -o secret-key=zuf+tfteSlswRu7BJ86wekitnifILbZam1KYY3TG -o mountpoint=/minfs
+//     -o secret-key=zuf+tfteSlswRu7BJ86wekitnifILbZam1KYY3TG -o bucket=test-bucket
 //
 type serverConfig struct {
 	// Endpoint of the remote Minio server.
@@ -51,8 +68,8 @@ type serverConfig struct {
 //   - The local mountpoint.
 //   - The number of connections alive for the mount (No.Of.Services still using the mount point).
 type mountInfo struct {
-	serverconfig serverConfig
-	mountPoint   string
+	config     serverConfig
+	mountPoint string
 	// the number of containers using the mount.
 	// an active mount is done when the count is 0.
 	// unmount is done only if the number of connections is 0.
@@ -76,7 +93,7 @@ type minfsDriver struct {
 	sync.RWMutex
 	mountRoot string
 	// config of the remote Minio server.
-	config serverconfig
+	config serverConfig
 	// the local path to which the remote Minio bucket is mounted to.
 
 	// An active volume driver server can be used to mount multiple
@@ -88,11 +105,11 @@ type minfsDriver struct {
 
 // return a new instance of minfsDriver.
 func newMinfsDriver(mountRoot string) *minfsDriver {
-	logrus.WithField("method", "new minfs driver").Debug(root)
+	logrus.WithField("method", "new minfs driver").Debug(mountRoot)
 
 	d := &minfsDriver{
 		mountRoot: mountRoot,
-		config:    serverConfig,
+		config:    serverConfig{},
 		mounts:    make(map[string]*mountInfo),
 	}
 
@@ -168,22 +185,22 @@ func (d *minfsDriver) Create(r volume.Request) volume.Response {
 	enableSSL, err := isSSL(config.endpoint)
 	if err != nil {
 		logrus.Error("Please send a valid URL of form http(s)://my-minio.com:9000 <ERROR> ", err.Error())
-		return err
+		return errorResponse(err.Error())
 	}
 
 	// Verify if the bucket exists.
 	// If it doesnt exist create the bucket on the remote Minio server.
 	// Initialize minio client object.
-	minioClient, err := minio.New(config.endpoint, config.accessKey, config.secretAccess, enableSSL)
+	minioClient, err := minio.New(config.endpoint, config.accessKey, config.secretKey, enableSSL)
 	if err != nil {
 		logrus.Error("Error creating new Minio client. <Error> %s", err.Error())
-		return errorResoponse(err.Error())
+		return errorResponse(err.Error())
 	}
 	// Create a bucket.
-	err = minioClient.MakeBucket(bucketName, defaultLocation)
+	err = minioClient.MakeBucket(config.bucket, defaultLocation)
 	if err != nil {
 		// Check to see if we already own this bucket.
-		exists, eErr := minioClient.BucketExists(bucketName)
+		exists, eErr := minioClient.BucketExists(config.bucket)
 		if eErr == nil && exists {
 			// bucket already exists log and return with success.
 			logrus.WithFields(logrus.Fields{
@@ -204,22 +221,13 @@ func (d *minfsDriver) Create(r volume.Request) volume.Response {
 	// `mountroot` is passed as an argument while starting the server with `--mountroot` option.
 	// the given bucket is mounted locally at path `mountroot + volume (r.Name is the name of the volume passed by docker when a volume is created).
 	mountpoint := filepath.Join(d.mountRoot, r.Name)
-	// create the directory for the mountpoint.
-	// This will be the directory at which the remote bucket will be mounted.
-	err = createDir(mountpoint)
-	if err != nil {
-		logrus.WithFields(logrus.Fields{
-			"mountpount": mountpoint,
-		}).Fatalf("Error creating directory for the mountpoint. <ERROR> %v.", err)
-		return errorResponse(err.Error())
-	}
 	// cache the info.
 	mntInfo.mountPoint = mountpoint
 	// `Create` is the only function which has the abiility to pass additional options.
 	// Protocol doc: https://docs.docker.com/engine/extend/plugins_volume/#/volumedrivercreate
 	// the server config info which is required for the mount later is also passed as an option during create.
 	// This has to be cached for further usage.
-	mntInfo.Config = config
+	mntInfo.config = config
 	// `r.Name` contains the plugin name passed with `--name` in `$ docker volume create -d <plugin-name> --name <volume-name>`.
 	// Name of the volume uniquely identifies the mount.
 	d.mounts[r.Name] = mntInfo
@@ -240,9 +248,9 @@ func isSSL(url string) (bool, error) {
 }
 
 // Parse the server endpoint to find out the scheme(http,https...).
-func getScheme(url string) (string, error) {
+func getScheme(endpoint string) (string, error) {
 	// parse the URL.
-	u, err := url.Parse(config.endpoint)
+	u, err := url.Parse(endpoint)
 	if err != nil {
 		return "", err
 	}
@@ -300,16 +308,17 @@ func (d *minfsDriver) Remove(r volume.Request) volume.Response {
 	// log and return error to docker daemon.
 	if !ok {
 		logrus.WithFields(logrus.Fields{
-			"volume": r.Name,
+			"operation": "Remove",
+			"volume":    r.Name,
 		}).Error("Volume not found.")
-		return responseError(fmt.Sprintf("volume %s not found", r.Name))
+		return errorResponse(fmt.Sprintf("volume %s not found", r.Name))
 	}
 	// The volume should be under use by any other containers.
 	// verify if the number of connections is 0.
 	if v.connections == 0 {
 		// if the count of existing connections is 0, delete the entry for the volume.
-		if err := os.RemoveAll(d.mountpoint); err != nil {
-			return responseError(err.Error())
+		if err := os.RemoveAll(v.mountPoint); err != nil {
+			return errorResponse(err.Error())
 		}
 		// Delete the entry for the mount.
 		delete(d.mounts, r.Name)
@@ -321,107 +330,172 @@ func (d *minfsDriver) Remove(r volume.Request) volume.Response {
 		"volume": r.Name,
 	}).Errorf("Volume is currently used by %d containers. ", v.connections)
 
-	return responseError(fmt.Sprintf("volume %s is currently under use.", r.Name))
+	return errorResponse(fmt.Sprintf("volume %s is currently under use.", r.Name))
 }
 
 // create directory for the given path.
 func createDir(path string) error {
-	err = os.Mkdir(preparePath(volumeDir), 0777)
-	if err != nil {
-		// ignore if the directory already exists.
-		if os.IsExist(err) {
-			return nil
-		} else if os.IsPermission(err) {
+	// verify whether the directory already exists.
+	fi, err := os.Lstat(path)
+	// create the directory doesn't exist.
+	if os.IsNotExist(err) {
+		if err := os.MkdirAll(path, 0755); err != nil {
 			return err
 		}
+	} else if err != nil {
 		return err
 	}
+	// if the file already exists, very that it is a directory.
+	if fi != nil && !fi.IsDir() {
+		return fmt.Errorf("%v already exist and it's not a directory", path)
+	}
+	return nil
 }
+
+// *minfsDriver.Path - Respond with the path on the host filesystem where the bucket mount has been made available.
+// protocol doc: https://docs.docker.com/engine/extend/plugins_volume/#/volumedriverpath
 func (d *minfsDriver) Path(r volume.Request) volume.Response {
 	logrus.WithField("method", "path").Debugf("%#v", r)
 
 	d.RLock()
 	defer d.RUnlock()
 
-	v, ok := d.volumes[r.Name]
+	v, ok := d.mounts[r.Name]
 	if !ok {
-		return responseError(fmt.Sprintf("volume %s not found", r.Name))
+		logrus.WithFields(logrus.Fields{
+			"operation": "path",
+			"volume":    r.Name,
+		}).Error("Volume not found.")
+		return errorResponse(fmt.Sprintf("volume %s not found", r.Name))
 	}
 
-	return volume.Response{Mountpoint: v.mountpoint}
+	return volume.Response{Mountpoint: v.mountPoint}
 }
 
+// *minfsDriver.Mount - Does mounting of `minfs`.
+// protocol doc: https://docs.docker.com/engine/extend/plugins_volume/#/volumedrivermount
+// If the mount alredy exists just increment the number of connections and return.
+// Mount is called only when another container shares the created volume.
+
+// Step 1: Create volume.
+// $ docker volume create -d minfs-plugin \
+//    --name profile-pic-store \
+//     -o endpoint=https://play.minio.io:9000/rao -o access_key=Q3AM3UQ867SPQQA43P2F\
+//     -o secret-key=zuf+tfteSlswRu7BJ86wekitnifILbZam1KYY3TG -o bucket=test-bucket.
+
+// Step 2: Shared the new volume.
+// ex: docker run -it -v profile-pic-store:/data busybox /bin/sh
+// This is when the Mount operation is called.
+
+// The above set of operations create a mount of remote bucket `test-bucket`,
+// in the local path of `mountroot + profile-pic-store`.
+// Note: mountroot passed as --mountroot flag while starting the plugin server.
 func (d *minfsDriver) Mount(r volume.MountRequest) volume.Response {
 	logrus.WithField("method", "mount").Debugf("%#v", r)
 
 	d.Lock()
 	defer d.Unlock()
-
-	v, ok := d.volumes[r.Name]
+	// verify if the volume exists.
+	// Mount operation should be performed only after creating the bucket.
+	v, ok := d.mounts[r.Name]
 	if !ok {
-		return responseError(fmt.Sprintf("volume %s not found", r.Name))
+		logrus.WithFields(logrus.Fields{
+			"operation": "mount",
+			"volume":    r.Name,
+		}).Error("Volume not found.")
+		return errorResponse(fmt.Sprintf("volume %s not found", r.Name))
 	}
 
+	// create the directory for the mountpoint.
+	// This will be the directory at which the remote bucket will be mounted.
+	err := createDir(v.mountPoint)
+	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"mountpount": v.mountPoint,
+		}).Fatalf("Error creating directory for the mountpoint. <ERROR> %v.", err)
+		return errorResponse(err.Error())
+	}
+	// If the mountpoint is already under use just increment the counter of usage and return to docker daemon.
 	if v.connections > 0 {
 		v.connections++
-		return volume.Response{Mountpoint: v.mountpoint}
+		return volume.Response{Mountpoint: v.mountPoint}
 	}
 
-	fi, err := os.Lstat(v.mountpoint)
-	if os.IsNotExist(err) {
-		if err := os.MkdirAll(v.mountpoint, 0755); err != nil {
-			return responseError(err.Error())
-		}
-	} else if err != nil {
-		return responseError(err.Error())
-	}
+	// set access-key and secret-key as env variables.
+	os.Setenv("MINFS_ACCESS_KEY", v.config.accessKey)
+	os.Setenv("MINFS_SECRET_KEY", v.config.secretKey)
+	// Mount the remote Minio bucket to the local mountpoint.
+	if err := d.mountVolume(*v); err != nil {
+		logrus.WithFields(logrus.Fields{
+			"mountpount": v.mountPoint,
+			"endpoint":   v.config.endpoint,
+			"bucket":     v.config.bucket,
+		}).Fatalf("Mount failed.")
 
-	if fi != nil && !fi.IsDir() {
-		return responseError(fmt.Sprintf("%v already exist and it's not a directory", v.mountpoint))
+		return errorResponse(err.Error())
 	}
-
-	if err := d.mountVolume(v); err != nil {
-		return responseError(err.Error())
-	}
-
-	return volume.Response{Mountpoint: v.mountpoint}
+	// success.
+	return volume.Response{Mountpoint: v.mountPoint}
 }
 
+// *minfsDriver.Unmount - unmounts the mount at `mountpoint`.
+// protocol doc: https://docs.docker.com/engine/extend/plugins_volume/#/volumedriverunmount
+// Unmount is called when a container using the mounted volume is stopped.
 func (d *minfsDriver) Unmount(r volume.UnmountRequest) volume.Response {
 	logrus.WithField("method", "unmount").Debugf("%#v", r)
 
 	d.Lock()
 	defer d.Unlock()
-	v, ok := d.volumes[r.Name]
+	// verify if the mount exists.
+	v, ok := d.mounts[r.Name]
 	if !ok {
-		return responseError(fmt.Sprintf("volume %s not found", r.Name))
+		// mount doesn't exist, return error.
+		logrus.WithFields(logrus.Fields{
+			"operation": "unmount",
+			"volume":    r.Name,
+		}).Error("Volume not found.")
+
+		return errorResponse(fmt.Sprintf("volume %s not found", r.Name))
 	}
+	// Unmount is done only if no other containers are using the mounted volume.
 	if v.connections <= 1 {
-		if err := d.unmountVolume(v.mountpoint); err != nil {
-			return responseError(err.Error())
+		// unmount.
+		if err := d.unmountVolume(v.mountPoint); err != nil {
+			return errorResponse(err.Error())
 		}
 		v.connections = 0
 	} else {
+		// If the count is > 1, that is if the mounted volume is already being used by
+		// another container, dont't unmount, just decrease the count and return.
 		v.connections--
 	}
 
 	return volume.Response{}
 }
 
+// *minfsDriver.Get - Get the mount info.
+// protocol doc: https://docs.docker.com/engine/extend/plugins_volume/#/volumedriverget
 func (d *minfsDriver) Get(r volume.Request) volume.Response {
 	logrus.WithField("method", "get").Debugf("%#v", r)
 
 	d.Lock()
 	defer d.Unlock()
-
-	v, ok := d.volumes[r.Name]
+	// verify if the mount exists.
+	v, ok := d.mounts[r.Name]
 	if !ok {
-		return responseError(fmt.Sprintf("volume %s not found", r.Name))
+		// mount doesn't exist, return error.
+		logrus.WithFields(logrus.Fields{
+			"operation": "unmount",
+			"volume":    r.Name,
+		}).Error("Volume not found.")
+		return errorResponse(fmt.Sprintf("volume %s not found", r.Name))
 	}
 
-	return volume.Response{Volume: &volume.Volume{Name: r.Name, Mountpoint: v.mountpoint}}
+	return volume.Response{Volume: &volume.Volume{Name: r.Name, Mountpoint: v.mountPoint}}
 }
 
+// *minfsDriver.List - Get the list of existing volumes.
+// protocol doc: https://docs.docker.com/engine/extend/plugins_volume/#/volumedriverlist
 func (d *minfsDriver) List(r volume.Request) volume.Response {
 	logrus.WithField("method", "list").Debugf("%#v", r)
 
@@ -429,50 +503,73 @@ func (d *minfsDriver) List(r volume.Request) volume.Response {
 	defer d.Unlock()
 
 	var vols []*volume.Volume
-	for name, v := range d.volumes {
-		vols = append(vols, &volume.Volume{Name: name, Mountpoint: v.mountpoint})
+	for name, v := range d.mounts {
+		vols = append(vols, &volume.Volume{Name: name, Mountpoint: v.mountPoint})
 	}
 	return volume.Response{Volumes: vols}
 }
 
+// *minfsDriver.Capabilities -  Takes values "local" or "global", more info in protocol doc below.
+// protocol doc: https://docs.docker.com/engine/extend/plugins_volume/#/volumedrivercapabilities
 func (d *minfsDriver) Capabilities(r volume.Request) volume.Response {
 	logrus.WithField("method", "capabilities").Debugf("%#v", r)
 
 	return volume.Response{Capabilities: volume.Capability{Scope: "local"}}
 }
 
-func (d *minfsDriver) mountVolume(v *mountInfo) error {
-	// TODO: mount here.
-	cmd := fmt.Sprintf("<mount here>")
+// mounts minfs to the local mountpoint.
+func (d *minfsDriver) mountVolume(v mountInfo) error {
+	// URL for the bucket (ex: https://play.minio.io:9000/mybucket).
+	var bucketPath string
+	if strings.HasSuffix(v.config.endpoint, "/") {
+
+		bucketPath = v.config.endpoint + v.config.endpoint
+	} else {
+		bucketPath = v.config.endpoint + "/" + v.config.endpoint
+	}
+	// mount command for minfs.
+	// ex:  mount -t minfs https://play.minio.io:9000/testbucket /testbucket
+	cmd := fmt.Sprintf("mount -t minfs %s %s", bucketPath, v.mountPoint)
 
 	logrus.Debug(cmd)
 	return exec.Command("sh", "-c", cmd).Run()
 }
 
+// executes `unmount` on the specified volume.
 func (d *minfsDriver) unmountVolume(target string) error {
-	// TODO: Unmount here.
+	//  Unmount the volume.
 	cmd := fmt.Sprintf("umount %s", target)
 	logrus.Debug(cmd)
 	return exec.Command("sh", "-c", cmd).Run()
 }
 
 func main() {
+	// --mountroot flag defines the root folder where are the volumes are mounted.
+	// If the option is not specified '/tmp' is taken as default mount root.
 	mountRoot := flag.String("mountroot", "/tmp", "root for mouting Minio buckets.")
 	// check if the mount root exists.
 	// create if it doesn't exist.
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		err := os.Mkdir(*mountRoot, 0600)
-	} else {
-		logrus.Error(err)
-	}
+	err := createDir(*mountRoot)
+	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"mountroot": mountRoot,
+		}).Fatalf("Unable to create mountroot.")
 
+		return
+	}
+	// if `export DEBUG=1` is set, debug logs will be printed.
 	debug := os.Getenv("DEBUG")
 	if ok, _ := strconv.ParseBool(debug); ok {
 		logrus.SetLevel(logrus.DebugLevel)
 	}
-
+	// Create a new instance MinfsDriver.
+	// The struct implements the `github.com/docker/go-plugins-helpers/volume.Driver` interface.
 	d := newMinfsDriver(*mountRoot)
+	// register it with the `go-plugin-helper`.
+	// `go-plugin-helper` is a tool built to make development of docker plugins easier, visit https://github.com/docker/go-plugins-helpers/.
+	// The registration is done using https://godoc.org/github.com/docker/go-plugins-helpers/volume#NewHandler .
 	h := volume.NewHandler(d)
+	// create a server on unix socket.
 	logrus.Infof("listening on %s", socketAddress)
 	logrus.Error(h.ServeUnix(socketAddress, 0))
 }
