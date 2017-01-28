@@ -41,13 +41,13 @@ const (
 	defaultLocation = "us-east-1"
 )
 
-// `serconfig` struct is used to store configuration values of the remote Minio server.
+// `serverconfig` struct is used to store configuration values of the remote Minio server.
 // Minfs uses this info to the mount the remote bucket.
 // The server info (endpoint, accessKey and secret Key) is passed during creating a docker volume.
 // Here is how to do it,
 // $ docker volume create -d minfs \
 //    --name medical-imaging-store \
-//     -o endpoint=https://play.minio.io:9000 -o access_key=Q3AM3UQ867SPQQA43P2F\
+//     -o endpoint=https://play.minio.io:9000 -o access-key=Q3AM3UQ867SPQQA43P2F\
 //     -o secret-key=zuf+tfteSlswRu7BJ86wekitnifILbZam1KYY3TG -o bucket=test-bucket
 type serverConfig struct {
 	// Endpoint of the remote Minio server.
@@ -62,7 +62,7 @@ type serverConfig struct {
 
 // Represents an instance of `minfs` mount of remote Minio bucket.
 // Its defined by
-//   - The server info for the mount.
+//   - The server info of the mount.
 //   - The local mountpoint.
 //   - The number of connections alive for the mount (No.Of.Services still using the mount point).
 type mountInfo struct {
