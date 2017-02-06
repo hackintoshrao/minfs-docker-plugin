@@ -358,7 +358,9 @@ func (d *minfsDriver) Mount(r volume.MountRequest) volume.Response {
 
 		return errorResponse(err.Error())
 	}
-	// success.
+	// Mount succeeds, increment the count for number of connections and return.
+	v.connections++
+
 	return volume.Response{Mountpoint: v.mountPoint}
 }
 
