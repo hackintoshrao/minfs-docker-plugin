@@ -5,7 +5,7 @@ all: clean docker rootfs create enable
 
 clean:
 	@echo "### rm ./plugin"
-	@rm -rf ./plugin
+	@rm -rf ./plugin minfs-docker-plugin
 
 docker:
 	@echo "### docker build: builder image"
