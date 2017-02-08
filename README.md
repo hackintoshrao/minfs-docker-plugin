@@ -1,20 +1,16 @@
 # Docker volume driver for MinFS.
 
 ## Install instructions.
-- Fetch and build the driver.
-
+- Install the driver.
+  
   ```sh
-  $ go get github.com/minio/minfs-docker-volume
-  ```
-- Run the Driver.
+  $ docker plugin install minio/minfs
+  ``` 
 
-  ```
-  $ $GOPATH/bin/minfs-docker-volume --mountroot=/mnt/minfs/
-  ```
 - Create a volume using the driver. Pass Minio server info as options shown below.
 
-  ```
-  $  $ docker volume create -d minfs \
+  ```sh
+  $ docker volume create -d minio/minfs \
      --name medical-imaging-store \
      -o endpoint=https://play.minio.io:9000 \
      -o access-key=Q3AM3UQ867SPQQA43P2F \
@@ -24,7 +20,8 @@
   
 - Share the new volume with a container and start using it.
 
-   ```
-   docker run -it -v medical-imaging-store:/data busybox /bin/sh
+   ```sh
+   $ docker run -it -v medical-imaging-store:/data busybox /bin/sh
+   $ ls /data
    ```
  
