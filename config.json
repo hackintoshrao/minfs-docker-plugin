@@ -1,0 +1,30 @@
+{
+	"description": "minfs plugin for Docker",
+	"documentation": "https://docs.docker.com/engine/extend/plugins/",
+	"entrypoint": ["/minfs-docker-volume"],
+	"network": {
+		"type": "host"
+	},
+	"interface" : {
+		"types": ["docker.volumedriver/1.0"],
+		"socket": "minfs.sock"
+	},
+        "linux": {
+	    "capabilities": ["CAP_SYS_ADMIN"],
+	    "devices": [
+		{
+		"path":"/dev/fuse"
+		}
+	    ]
+	},
+        "propagatedmount": "/tmp",
+	"env": [
+	    {
+		"name":"DEBUG",
+		"settable":["value"],
+		"value":"1"
+	    }
+	]
+}
+
+

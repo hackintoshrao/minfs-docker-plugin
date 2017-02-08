@@ -326,8 +326,8 @@ func (d *minfsDriver) Mount(r volume.MountRequest) volume.Response {
 		logrus.WithFields(logrus.Fields{
 			"operation": "mount",
 			"volume":    r.Name,
-		}).Error("Volume not found.")
-		return errorResponse(fmt.Sprintf("volume %s not found", r.Name))
+		}).Error("method:mount: Volume not found.")
+		return errorResponse(fmt.Sprintf("method:mount: volume %s not found", r.Name))
 	}
 
 	// create the directory for the mountpoint.
@@ -349,6 +349,7 @@ func (d *minfsDriver) Mount(r volume.MountRequest) volume.Response {
 	os.Setenv("MINFS_ACCESS_KEY", v.config.accessKey)
 	os.Setenv("MINFS_SECRET_KEY", v.config.secretKey)
 	// Mount the remote Minio bucket to the local mountpoint.
+
 	if err := d.mountVolume(*v); err != nil {
 		logrus.WithFields(logrus.Fields{
 			"mountpount": v.mountPoint,
@@ -358,6 +359,7 @@ func (d *minfsDriver) Mount(r volume.MountRequest) volume.Response {
 
 		return errorResponse(err.Error())
 	}
+
 	// Mount succeeds, increment the count for number of connections and return.
 	v.connections++
 
