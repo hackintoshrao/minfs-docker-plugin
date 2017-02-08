@@ -75,5 +75,5 @@
 			"revisionTime": "2016-12-14T18:38:57Z"
 		}
 	],
-	"rootPath": "github.com/hackintoshrao/minfs-docker-volume-driver"
+	"rootPath": "github.com/minio/minfs-docker-plugin"
 }

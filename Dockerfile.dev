@@ -1,9 +1,9 @@
 FROM golang:1.7-wheezy
 
-COPY . /go/src/github.com/minio/minfs-docker-volume
-WORKDIR /go/src/github.com/minio/minfs-docker-volume
+COPY . /go/src/github.com/minio/minfs-docker-plugin
+WORKDIR /go/src/github.com/minio/minfs-docker-plugin
 
 RUN set -ex \
     && go install --ldflags '-extldflags "-static"'
 
-CMD ["/go/bin/minfs-docker-volume"]
+CMD ["/go/bin/minfs-docker-plugin"]

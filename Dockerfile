@@ -13,6 +13,6 @@ RUN \
     cd minfs && \
     make install
 
-COPY minfs-docker-volume /minfs-docker-volume
+COPY minfs-docker-plugin /usr/sbin/minfs-docker-plugin
 
-CMD ["minfs-docker-volume"]
+CMD ["minfs-docker-plugin"]

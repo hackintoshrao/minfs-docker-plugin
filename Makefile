@@ -1,4 +1,4 @@
-PLUGIN_NAME=minio/minfs-plugin
+PLUGIN_NAME=minio/minfs
 PLUGIN_TAG=latest
 
 all: clean docker rootfs create enable
@@ -10,12 +10,12 @@ clean:
 docker:
 	@echo "### docker build: builder image"
 	@docker build -q -t builder -f Dockerfile.dev .
-	@echo "### extract docker-volume-sshfs"
+	@echo "### extract minfs-docker-plugin"
 	@docker create --name tmp builder
-	@docker cp tmp:/go/bin/minfs-docker-volume .
+	@docker cp tmp:/go/bin/minfs-docker-plugin .
 	@docker rm -vf tmp
 	@docker rmi builder
-	@echo "### docker build: rootfs image with minfs-docker-volume"
+	@echo "### docker build: rootfs image with minfs-docker-plugin"
 	@docker build -q -t ${PLUGIN_NAME}:rootfs .
 
 rootfs:
